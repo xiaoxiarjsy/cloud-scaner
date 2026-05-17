@@ -1,0 +1,27 @@
+name = "leak-scan"
+main = "src/index.ts"
+compatibility_date = "2026-05-11"
+keep_vars = true
+
+[vars]
+default_limit = "30"
+min_entropy = "4.5"
+
+# Configure in Cloudflare Dashboard:
+# - Secret: GITHUB_TOKEN
+
+[[d1_databases]]
+binding = "DB"
+database_name = "leak-scan"
+database_id = ""
+preview_database_id = "local-leak-scan"
+migrations_dir = "migrations"
+
+[[kv_namespaces]]
+binding = "SCAN_KV"
+
+[assets]
+binding = "ASSETS"
+directory = "../frontend/dist"
+not_found_handling = "single-page-application"
+run_worker_first = true
