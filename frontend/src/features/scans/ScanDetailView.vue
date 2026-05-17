@@ -92,11 +92,11 @@ async function pollProgress() {
   if (pollingProgress) return
   pollingProgress = true
   try {
-    progressError.value = ''
     const currentStatus = progress.value?.status ?? scan.value?.status
     progress.value = currentStatus === 'running' || !currentStatus
       ? await scansApi.advance(scanId)
       : await scansApi.progress(scanId)
+    progressError.value = ''
     if (progress.value?.status !== 'running') {
       clearPolling()
       await load()

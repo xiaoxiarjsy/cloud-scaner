@@ -18,6 +18,7 @@ const scansRoutes = new Hono<{ Bindings: Env; Variables: AppVariables }>()
 const SCAN_CHUNK_FILE_LIMIT = 2
 const SCAN_CHUNK_MAX_MS = 15_000
 const SCAN_STATE_TTL = 24 * 60 * 60
+const SCAN_LOCK_TTL = 60
 
 interface ScanState {
   query: string
@@ -403,11 +404,17 @@ async function failScan(scanId: string, message: string, db: D1Database, kv: KVN
 
 async function advanceScanChunk(scanId: string, db: D1Database, kv: KVNamespace) {
   const lockKey = scanLockKey(scanId)
-  const locked = await kv.get(lockKey)
-  if (locked) return
+  let lockAcquired = false
 
-  await kv.put(lockKey, '1', { expirationTtl: 30 })
   try {
+    const locked = await kv.get(lockKey)
+    if (locked) {
+      await pushLog(kv, scanId, 'info', '上一个扫描分片仍在执行，等待下一次轮询...', nowIso())
+      return
+    }
+    await kv.put(lockKey, '1', { expirationTtl: SCAN_LOCK_TTL })
+    lockAcquired = true
+
     const scan = await db.prepare("SELECT status FROM scans WHERE id = ?").bind(scanId).first<{ status: string }>()
     if (!scan || scan.status !== 'running') return
 
@@ -458,9 +465,14 @@ async function advanceScanChunk(scanId: string, db: D1Database, kv: KVNamespace)
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
-    await failScan(scanId, message, db, kv)
+    try {
+      await failScan(scanId, message, db, kv)
+    } catch (failErr) {
+      console.error('failed to mark scan failed', failErr)
+      throw err
+    }
   } finally {
-    await kv.delete(lockKey)
+    if (lockAcquired) await kv.delete(lockKey)
   }
 }
 
