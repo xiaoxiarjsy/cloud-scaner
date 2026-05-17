@@ -12,6 +12,7 @@ import { consumeRateLimit, getClientIp, rateLimitKey } from '../utils/rate-limit
 import { paramsToObject } from '../utils/params'
 import { TokenRotator } from '../services/token-rotation.service'
 import { logAction } from '../utils/logger'
+import type { ValidationResult } from '../services/validator.service'
 
 const scansRoutes = new Hono<{ Bindings: Env; Variables: AppVariables }>()
 
@@ -21,8 +22,8 @@ async function pushLog(kv: KVNamespace, scanId: string, level: 'info' | 'found' 
   const raw = await kv.get(key)
   const entries: Array<{ ts: string; level: string; msg: string }> = raw ? JSON.parse(raw) : []
   entries.push({ ts, level, msg })
-  // Keep last 500 entries max
-  if (entries.length > 500) entries.splice(0, entries.length - 500)
+  // Keep enough detail for long scans without letting the KV value grow forever.
+  if (entries.length > 1000) entries.splice(0, entries.length - 1000)
   await kv.put(key, JSON.stringify(entries), { expirationTtl: 3600 })
 }
 
@@ -30,6 +31,24 @@ async function pushLog(kv: KVNamespace, scanId: string, level: 'info' | 'found' 
 async function isCancelled(kv: KVNamespace, scanId: string): Promise<boolean> {
   const raw = await kv.get(`scan:cancel:${scanId}`)
   return raw === '1'
+}
+
+function describeValidation(result: ValidationResult | null): string {
+  if (!result) return '验证失败: 请求异常、超时或规则暂不支持'
+  if (!result.valid) return '验证未通过: 密钥无效'
+
+  const detail = result.currency ? ` (${result.balance} ${result.currency})` : ''
+  if (!result.available) return `验证未通过: 密钥有效但不可用${detail}`
+
+  return `验证通过: 可用${detail}`
+}
+
+function summarizeRules(findings: Array<{ ruleName: string }>): string {
+  const counts = new Map<string, number>()
+  for (const finding of findings) {
+    counts.set(finding.ruleName, (counts.get(finding.ruleName) || 0) + 1)
+  }
+  return Array.from(counts.entries()).map(([rule, count]) => `${rule} x${count}`).join(', ')
 }
 
 // List scans with pagination and status filter
@@ -159,6 +178,8 @@ async function runScan(scanId: string, input: CreateScanInputType, db: D1Databas
 
   if (input.rules && input.rules.length > 0) {
     await pushLog(kv, scanId, 'info', `使用 ${activeRules.length}/${DEFAULT_RULES.length} 条规则: ${input.rules.join(', ')}`, nowIso())
+  } else {
+    await pushLog(kv, scanId, 'info', `使用全部 ${activeRules.length} 条规则`, nowIso())
   }
   if (autoValidate) await pushLog(kv, scanId, 'info', '已启用自动验证（仅保存有效密钥）', nowIso())
   await pushLog(kv, scanId, 'info', `开始扫描: ${query} (limit: ${limitCount === 0 ? '无限' : limitCount})`, nowIso())
@@ -193,6 +214,7 @@ async function runScan(scanId: string, input: CreateScanInputType, db: D1Databas
       const fileKey = `${sr.repo}/${sr.filePath}`
       if (seenFiles.has(fileKey)) {
         skipped++
+        await pushLog(kv, scanId, 'skip', `跳过历史文件: ${fileKey}`, nowIso())
         if (skipped % 20 === 1) await pushLog(kv, scanId, 'skip', `已跳过 ${skipped} 个文件`, nowIso())
         if (skipped % 10 === 0) await kv.put(`scan:progress:${scanId}`, JSON.stringify({ scanned, skipped, findings: totalFindings, status: 'running', updatedAt: nowIso() }), { expirationTtl: 3600 })
         continue
@@ -203,12 +225,21 @@ async function runScan(scanId: string, input: CreateScanInputType, db: D1Databas
 
       const content = await client.getFileContent(sr.repo, sr.filePath)
       if (!content) {
-        if (scanned % 10 === 0) await kv.put(`scan:progress:${scanId}`, JSON.stringify({ scanned, skipped, findings: totalFindings, status: 'running', updatedAt: nowIso() }), { expirationTtl: 3600 })
+        await pushLog(kv, scanId, 'skip', `跳过文件: 无法读取或内容为空 -> ${fileKey}`, nowIso())
+        if (scanned % 10 === 0) {
+          await kv.put(`scan:progress:${scanId}`, JSON.stringify({ scanned, skipped, findings: totalFindings, status: 'running', updatedAt: nowIso() }), { expirationTtl: 3600 })
+          await pushLog(kv, scanId, 'info', `进度: 已扫描 ${scanned}, 已跳过 ${skipped}, 有效发现 ${totalFindings}`, nowIso())
+        }
         continue
       }
 
       const findings = scanContent(sr.repo, sr.filePath, sr.url, content, activeRules, minEntropy)
       const unique = deduplicate(findings)
+      if (unique.length === 0) {
+        await pushLog(kv, scanId, 'info', `未命中候选: ${fileKey}`, nowIso())
+      } else {
+        await pushLog(kv, scanId, 'info', `命中候选: ${fileKey} -> ${unique.length} 条 (${summarizeRules(unique)})`, nowIso())
+      }
 
       if (unique.length > 0) {
         const savedFindings: Array<{ finding: typeof unique[0]; validation?: { status: string; json: string } }> = []
@@ -217,6 +248,7 @@ async function runScan(scanId: string, input: CreateScanInputType, db: D1Databas
             const { validateFinding } = await import('../services/validator.service')
             await pushLog(kv, scanId, 'info', `正在验证候选: ${f.ruleName} → ${f.repo}/${f.filePath}:${f.lineNumber}`, nowIso())
             const result = await validateFinding(f.ruleName, f.rawText)
+            await pushLog(kv, scanId, result?.valid && result.available ? 'found' : 'skip', `${describeValidation(result)} -> ${f.ruleName} @ ${f.repo}/${f.filePath}:${f.lineNumber}`, nowIso())
             if (!result || !result.valid || !result.available) {
               await pushLog(kv, scanId, 'info', `跳过无效: ${f.ruleName} → ${f.repo}/${f.filePath}:${f.lineNumber}`, nowIso())
               continue
@@ -241,14 +273,19 @@ async function runScan(scanId: string, input: CreateScanInputType, db: D1Databas
           batch.push(db.prepare('INSERT OR IGNORE INTO scanned_files (scan_id, file_key, created_at) VALUES (?, ?, ?)').bind(scanId, fileKey, nowIso()))
           await db.batch(batch)
           totalFindings += savedFindings.length
+          await pushLog(kv, scanId, 'found', `已保存发现: ${fileKey} -> ${savedFindings.length} 条, 累计 ${totalFindings} 条`, nowIso())
         } else {
+          await pushLog(kv, scanId, 'skip', `候选均未保存: ${fileKey}`, nowIso())
           await db.prepare('INSERT OR IGNORE INTO scanned_files (scan_id, file_key, created_at) VALUES (?, ?, ?)').bind(scanId, fileKey, nowIso()).run()
         }
       } else {
         await db.prepare('INSERT OR IGNORE INTO scanned_files (scan_id, file_key, created_at) VALUES (?, ?, ?)').bind(scanId, fileKey, nowIso()).run()
       }
 
-      if (scanned % 10 === 0) await kv.put(`scan:progress:${scanId}`, JSON.stringify({ scanned, skipped, findings: totalFindings, status: 'running', updatedAt: nowIso() }), { expirationTtl: 3600 })
+      if (scanned % 10 === 0) {
+        await kv.put(`scan:progress:${scanId}`, JSON.stringify({ scanned, skipped, findings: totalFindings, status: 'running', updatedAt: nowIso() }), { expirationTtl: 3600 })
+        await pushLog(kv, scanId, 'info', `进度: 已扫描 ${scanned}, 已跳过 ${skipped}, 有效发现 ${totalFindings}`, nowIso())
+      }
     }
 
     await db.prepare(`UPDATE scans SET status = 'completed', progress_scanned = ?, progress_skipped = ?, progress_findings = ?, updated_at = ?, completed_at = ? WHERE id = ?`).bind(scanned, skipped, totalFindings, nowIso(), nowIso(), scanId).run()

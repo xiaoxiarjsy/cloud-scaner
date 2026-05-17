@@ -18,6 +18,7 @@ export class GitHubClient {
     let yielded = 0
 
     while (true) {
+      await this.emit(`GitHub 搜索页: query="${query}", page=${page}, perPage=${perPage}`)
       const resp = await fetch(
         `${GitHubClient.BASE}/search/code?q=${encodeURIComponent(query)}&per_page=${perPage}&page=${page}`,
         { headers: this.headers() }
@@ -37,15 +38,26 @@ export class GitHubClient {
         continue
       }
 
-      if (resp.status === 422) break
+      if (resp.status === 422) {
+        await this.emit(`GitHub 查询结束: query="${query}" 被 API 拒绝或没有更多结果`)
+        break
+      }
 
       if (!resp.ok) {
         throw new Error(`GitHub API error: ${resp.status} ${resp.statusText}`)
       }
 
-      const data = (await resp.json()) as { items?: Array<{ repository: { full_name: string }; path: string; html_url: string }> }
+      const data = (await resp.json()) as {
+        total_count?: number
+        incomplete_results?: boolean
+        items?: Array<{ repository: { full_name: string }; path: string; html_url: string }>
+      }
       const items = data.items || []
-      if (items.length === 0) break
+      await this.emit(`GitHub 返回: query="${query}", page=${page}, items=${items.length}, total=${data.total_count ?? 'unknown'}, incomplete=${data.incomplete_results ? 'yes' : 'no'}`)
+      if (items.length === 0) {
+        await this.emit(`GitHub 查询结束: query="${query}" 当前页无结果`)
+        break
+      }
 
       for (const item of items) {
         yield {
@@ -54,10 +66,16 @@ export class GitHubClient {
           url: item.html_url
         }
         yielded++
-        if (limit > 0 && yielded >= limit) return
+        if (limit > 0 && yielded >= limit) {
+          await this.emit(`GitHub 查询达到扫描上限: ${yielded}/${limit}`)
+          return
+        }
       }
 
-      if (items.length < perPage) break
+      if (items.length < perPage) {
+        await this.emit(`GitHub 查询结束: query="${query}" 当前页不足 ${perPage} 条`)
+        break
+      }
       page++
     }
   }
@@ -71,10 +89,13 @@ export class GitHubClient {
         )
         if (resp.status === 200) {
           const text = await resp.text()
+          await this.emit(`文件读取成功: ${repo}/${path} (${text.length} bytes)`)
           return text.slice(0, 1_000_000)
         }
+        await this.emit(`文件读取跳过: ${repo}/${path} HTTP ${resp.status}`)
         return ''
-      } catch {
+      } catch (error) {
+        await this.emit(`文件读取异常: ${repo}/${path} (${error instanceof Error ? error.message : 'unknown error'})`)
         if (attempt < retries - 1) {
           await this.delay(2 * (attempt + 1))
         }
