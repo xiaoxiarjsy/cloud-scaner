@@ -165,7 +165,7 @@ async function runScan(scanId: string, input: CreateScanInputType, db: D1Databas
 
   let currentToken = firstToken!
   try {
-    const client = new GitHubClient(currentToken)
+    const client = new GitHubClient(currentToken, (message) => pushLog(kv, scanId, 'info', message, nowIso()))
     const seenFiles = new Set<string>()
     let scanned = 0
     let skipped = 0
@@ -215,6 +215,7 @@ async function runScan(scanId: string, input: CreateScanInputType, db: D1Databas
         for (const f of unique) {
           if (autoValidate) {
             const { validateFinding } = await import('../services/validator.service')
+            await pushLog(kv, scanId, 'info', `Validating candidate: ${f.ruleName} -> ${f.repo}/${f.filePath}:${f.lineNumber}`, nowIso())
             const result = await validateFinding(f.ruleName, f.rawText)
             if (!result || !result.valid || !result.available) {
               await pushLog(kv, scanId, 'info', `跳过无效: ${f.ruleName} → ${f.repo}/${f.filePath}:${f.lineNumber}`, nowIso())

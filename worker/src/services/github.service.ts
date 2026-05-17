@@ -7,7 +7,10 @@ export interface SearchResult {
 export class GitHubClient {
   private static BASE = 'https://api.github.com'
 
-  constructor(private readonly token: string) {}
+  constructor(
+    private readonly token: string,
+    private readonly onStatus?: (message: string) => Promise<void> | void
+  ) {}
 
   async *searchCode(query: string, limit: number = 30): AsyncGenerator<SearchResult> {
     let page = 1
@@ -29,6 +32,7 @@ export class GitHubClient {
             : 'GitHub API rate limit exceeded'
           throw new Error(msg)
         }
+        await this.emit(`GitHub secondary limit, retrying in 10s: ${query}`)
         await this.delay(10)
         continue
       }
@@ -88,43 +92,43 @@ export class GitHubClient {
   }
 
   async *searchCodeUnlimited(query: string): AsyncGenerator<SearchResult> {
-    const seenQueries = new Set<string>()
-    let currentQuery = query
-
-    while (true) {
-      seenQueries.add(currentQuery)
+    for (const currentQuery of this.expandedQueries(query)) {
       let hasResults = false
+      let count = 0
+
+      await this.emit(`GitHub search: ${currentQuery}`)
 
       for await (const result of this.searchCode(currentQuery, 0)) {
         hasResults = true
+        count++
         yield result
       }
 
-      if (!hasResults) break
-
-      const nextQuery = this.variantQuery(query, seenQueries)
-      if (!nextQuery) break
-      currentQuery = nextQuery
+      await this.emit(`GitHub search finished: ${currentQuery} (${count} files)`)
+      if (!hasResults) continue
     }
   }
 
-  private variantQuery(baseQuery: string, seen: Set<string>): string | null {
-    // Try random hex suffix
-    const hex = '0123456789abcdef'
-    for (let i = 0; i < 10; i++) {
-      const suffix = hex[Math.floor(Math.random() * 16)] + hex[Math.floor(Math.random() * 16)]
-      const candidate = `${baseQuery} ${suffix}`
-      if (!seen.has(candidate)) return candidate
-    }
-
-    // Try language filters
+  private expandedQueries(baseQuery: string): string[] {
+    const queries = [baseQuery]
     const langs = ['python', 'javascript', 'typescript', 'go', 'java', 'ruby', 'php', 'rust', 'c', 'cpp']
-    for (const lang of langs) {
-      const candidate = `${baseQuery} language:${lang}`
-      if (!seen.has(candidate)) return candidate
+    const hasLanguage = /\blanguage:/i.test(baseQuery)
+
+    if (!hasLanguage) {
+      for (const lang of langs) {
+        queries.push(`${baseQuery} language:${lang}`)
+      }
     }
 
-    return null
+    return Array.from(new Set(queries))
+  }
+
+  private async emit(message: string): Promise<void> {
+    try {
+      await this.onStatus?.(message)
+    } catch {
+      // Logging must not break scanning.
+    }
   }
 
   private delay(seconds: number): Promise<void> {

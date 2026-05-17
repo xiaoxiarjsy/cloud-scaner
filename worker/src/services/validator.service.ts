@@ -8,9 +8,19 @@ export interface ValidationResult {
   remaining?: number
 }
 
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 8_000): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(input, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export async function checkDeepSeekBalance(apiKey: string): Promise<ValidationResult | null> {
   try {
-    const resp = await fetch('https://api.deepseek.com/user/balance', {
+    const resp = await fetchWithTimeout('https://api.deepseek.com/user/balance', {
       headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' }
     })
 
@@ -61,7 +71,7 @@ export async function checkDeepSeekBalance(apiKey: string): Promise<ValidationRe
 
 export async function checkOpenAiKey(apiKey: string): Promise<ValidationResult | null> {
   try {
-    const resp = await fetch('https://api.openai.com/v1/models', {
+    const resp = await fetchWithTimeout('https://api.openai.com/v1/models', {
       headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' }
     })
 
@@ -95,7 +105,7 @@ export async function checkOpenAiKey(apiKey: string): Promise<ValidationResult |
 
 export async function checkGoogleApiKey(apiKey: string): Promise<ValidationResult | null> {
   try {
-    const resp = await fetch(`https://www.googleapis.com/discovery/v1/apis?key=${apiKey}`)
+    const resp = await fetchWithTimeout(`https://www.googleapis.com/discovery/v1/apis?key=${apiKey}`)
 
     if (resp.status === 200) {
       return { valid: true, available: true, balance: 0, currency: 'Google' }
@@ -118,7 +128,7 @@ export async function checkGoogleApiKey(apiKey: string): Promise<ValidationResul
 
 export async function checkAnthropicKey(apiKey: string): Promise<ValidationResult | null> {
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/models', {
+    const resp = await fetchWithTimeout('https://api.anthropic.com/v1/models', {
       headers: {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
