@@ -22,6 +22,7 @@ export interface ScanProgress {
   findings: number
   status: string
   updatedAt: string
+  logs?: Array<{ ts: string; level: string; msg: string }>
 }
 
 export interface Finding {

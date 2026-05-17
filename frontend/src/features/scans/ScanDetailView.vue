@@ -33,8 +33,6 @@ const showLog = ref(true)
 const progressError = ref('')
 const logContainer = ref<HTMLElement | null>(null)
 let pollTimer: number | undefined
-let logTimer: number | undefined
-let logVersion = 0
 let pollingProgress = false
 
 function findingBalance(f: Finding): string {
@@ -77,15 +75,10 @@ async function loadFindings() {
   }
 }
 
-async function loadLog() {
-  try {
-    const result = await scansApi.log(scanId)
-    if (result.entries.length !== logVersion) {
-      logEntries.value = result.entries
-      logVersion = result.entries.length
-      await scrollToBottom()
-    }
-  } catch { /* */ }
+async function appendLogs(entries: LogEntry[] = []) {
+  if (entries.length === 0) return
+  logEntries.value = [...logEntries.value, ...entries].slice(-1000)
+  await scrollToBottom()
 }
 
 async function pollProgress() {
@@ -93,15 +86,16 @@ async function pollProgress() {
   pollingProgress = true
   try {
     const currentStatus = progress.value?.status ?? scan.value?.status
-    progress.value = currentStatus === 'running' || !currentStatus
+    const result = currentStatus === 'running' || !currentStatus
       ? await scansApi.advance(scanId)
       : await scansApi.progress(scanId)
+    progress.value = result
+    await appendLogs(result.logs)
     progressError.value = ''
     if (progress.value?.status !== 'running') {
       clearPolling()
       await load()
       await loadFindings()
-      await loadLog()
     }
   } catch (e: unknown) {
     progressError.value = e instanceof Error ? e.message : '扫描推进失败'
@@ -115,8 +109,6 @@ let findingsTimer: number | undefined
 function startPolling() {
   pollProgress()
   pollTimer = window.setInterval(pollProgress, 2000)
-  loadLog()
-  logTimer = window.setInterval(loadLog, 1000)
   // Also refresh findings during scan
   loadFindings()
   findingsTimer = window.setInterval(loadFindings, 3000)
@@ -124,7 +116,6 @@ function startPolling() {
 
 function clearPolling() {
   if (pollTimer) { window.clearInterval(pollTimer); pollTimer = undefined }
-  if (logTimer) { window.clearInterval(logTimer); logTimer = undefined }
   if (findingsTimer) { window.clearInterval(findingsTimer); findingsTimer = undefined }
 }
 
@@ -134,7 +125,7 @@ async function scrollToBottom() {
 }
 
 onMounted(async () => {
-  await load(); await loadFindings(); await loadLog()
+  await load(); await loadFindings()
   if (scan.value?.status === 'running') startPolling()
 })
 watch(() => scan.value?.status, (s) => { if (s === 'running' && !pollTimer) startPolling() })
@@ -148,7 +139,7 @@ async function cancelScan() {
     tone: 'warning'
   })
   if (!accepted) return
-  try { await scansApi.cancel(scanId); clearPolling(); await loadLog(); await load() } catch { /* */ }
+  try { await scansApi.cancel(scanId); clearPolling(); await load() } catch { /* */ }
 }
 async function deleteScan() {
   const accepted = await confirm({
