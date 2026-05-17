@@ -32,7 +32,7 @@ export class GitHubClient {
             : 'GitHub API rate limit exceeded'
           throw new Error(msg)
         }
-        await this.emit(`GitHub secondary limit, retrying in 10s: ${query}`)
+        await this.emit(`GitHub 触发二级限流，10 秒后重试: ${query}`)
         await this.delay(10)
         continue
       }
@@ -96,7 +96,7 @@ export class GitHubClient {
       let hasResults = false
       let count = 0
 
-      await this.emit(`GitHub search: ${currentQuery}`)
+      await this.emit(`GitHub 搜索: ${currentQuery}`)
 
       for await (const result of this.searchCode(currentQuery, 0)) {
         hasResults = true
@@ -104,7 +104,7 @@ export class GitHubClient {
         yield result
       }
 
-      await this.emit(`GitHub search finished: ${currentQuery} (${count} files)`)
+      await this.emit(`GitHub 搜索完成: ${currentQuery} (${count} 个文件)`)
       if (!hasResults) continue
     }
   }

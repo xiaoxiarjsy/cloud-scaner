@@ -215,7 +215,7 @@ async function runScan(scanId: string, input: CreateScanInputType, db: D1Databas
         for (const f of unique) {
           if (autoValidate) {
             const { validateFinding } = await import('../services/validator.service')
-            await pushLog(kv, scanId, 'info', `Validating candidate: ${f.ruleName} -> ${f.repo}/${f.filePath}:${f.lineNumber}`, nowIso())
+            await pushLog(kv, scanId, 'info', `正在验证候选: ${f.ruleName} → ${f.repo}/${f.filePath}:${f.lineNumber}`, nowIso())
             const result = await validateFinding(f.ruleName, f.rawText)
             if (!result || !result.valid || !result.available) {
               await pushLog(kv, scanId, 'info', `跳过无效: ${f.ruleName} → ${f.repo}/${f.filePath}:${f.lineNumber}`, nowIso())
